@@ -1,0 +1,17 @@
+# 环境变量 / 密钥（切勿提交）
+.env
+.env.*
+
+# 编译产物
+/bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# IDE
+.idea/
+.vscode/
