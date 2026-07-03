@@ -112,10 +112,21 @@ func main() {
 	workDir, _ := os.Getwd()
 	llmProvider := provider.NewZhipuOpenAIProvider("glm-4.5-air")
 	registry := tools.NewRegistry()
-	readFileTool := tools.NewReadFileTool(workDir)
-	registry.Register(readFileTool)
+	// 挂载极简工具
+	registry.Register(tools.NewReadFileTool(workDir))
+	registry.Register(tools.NewWriteFileTool(workDir))
+	registry.Register(tools.NewBashTool(workDir))
+	registry.Register(tools.NewEditFileTool(workDir))
+	// 实例化核心引擎，关闭慢思考阶段，享受 YOLO 急速模式
 	eng := engine.NewAgentEngine(llmProvider, registry, workDir, false)
-	prompt := "请调用工具读取一下当前工作区目录下 hello.txt 文件的内容，并用一句话向我总结它说了什么。"
+	prompt := ` 
+		我当前目录下有一个 server.go 文件。 
+		请帮我把里面 "TODO: 增加鉴权逻辑" 下面的那个 if 语句，整个替换为： 
+		if user == nil { 
+			fmt.Println("Forbidden!") 
+			return 
+		}
+	`
 	err := eng.Run(context.Background(), prompt)
 	if err != nil {
 		log.Fatalf("引擎运行崩溃: %v", err)
