@@ -4,13 +4,10 @@ package main
 import (
 	"context"
 	"log"
-	"net/http"
 	"os"
 
 	"github.com/joho/godotenv"
-	"github.com/larksuite/oapi-sdk-go/v3/core/httpserverext"
 	"github.com/liang21/go-tiny-claw/internal/engine"
-	"github.com/liang21/go-tiny-claw/internal/feishu"
 	"github.com/liang21/go-tiny-claw/internal/provider"
 	"github.com/liang21/go-tiny-claw/internal/schema"
 	"github.com/liang21/go-tiny-claw/internal/tools"
@@ -76,6 +73,9 @@ func (m mockRegistry) Execute(ctx context.Context, call schema.ToolCall) schema.
 		IsError:    false,
 	}
 }
+func init() {
+	_ = godotenv.Load()
+}
 func main() {
 	//fmt.Println("🚀 欢迎来到 go-tiny-claw 引擎启动序列")
 	//
@@ -108,11 +108,11 @@ func main() {
 
 	//log.Println("架构蓝图搭建完毕，等待各核心模块注入！")
 	// 从 .env 加载配置（若存在）；不覆盖已存在的环境变量，缺失时静默回退到 shell 环境
-	_ = godotenv.Load()
 	if os.Getenv("ZHIPU_API_KEY") == "" {
 		log.Fatal("请先导出 ZHIPU_API_KEY 环境变量（或在项目根目录创建 .env 文件）")
 	}
 	workDir, _ := os.Getwd()
+	workDir += "/workspace"
 	llmProvider := provider.NewZhipuOpenAIProvider("glm-4.5-air")
 	registry := tools.NewRegistry()
 	// 挂载极简工具
@@ -127,14 +127,20 @@ func main() {
 	//	为了节省时间，请你同时一次性读取这三个文件，并将它们的内容综合起来，告诉我它们分别记录了什么领域的信息。
 	//`
 	// 2.初始化飞书 Bot 调度器
-	bot := feishu.NewFeishuBot(eng)
-	handler := httpserverext.NewEventHandlerFunc(bot.GetEventDispatcher())
-	http.HandleFunc("/webhook/event", handler)
-	port := ":48080"
-	log.Printf("🚀 go-tiny-claw 飞书服务端已启动，正在监听 %s 端口\n", port)
-	err := http.ListenAndServe(port, nil)
-	//err := eng.Run(context.Background(), prompt)
+	//bot := feishu.NewFeishuBot(eng)
+	//handler := httpserverext.NewEventHandlerFunc(bot.GetEventDispatcher())
+	//http.HandleFunc("/webhook/event", handler)
+	//port := ":48080"
+	//log.Printf("🚀 go-tiny-claw 飞书服务端已启动，正在监听 %s 端口\n", port)
+	//err := http.ListenAndServe(port, nil)
+	////err := eng.Run(context.Background(), prompt)
+	//if err != nil {
+	//	log.Fatalf("服务器启动失败: %v", err)
+	//}
+	reporter := engine.NewTerminalReporter()
+	prompt := ` 我需要在当前目录下新建一个 ping.go，提供一个简单的 http ping 接口。 写完之后，帮我把代码用 git 提交一下。 `
+	err := eng.Run(context.Background(), prompt, reporter)
 	if err != nil {
-		log.Fatalf("服务器启动失败: %v", err)
+		log.Fatalf("引擎运行崩溃: %v", err)
 	}
 }
