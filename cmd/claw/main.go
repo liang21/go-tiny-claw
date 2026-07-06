@@ -121,7 +121,7 @@ func main() {
 	registry.Register(tools.NewBashTool(workDir))
 	registry.Register(tools.NewEditFileTool(workDir))
 	// 实例化核心引擎，关闭慢思考阶段，享受 YOLO 急速模式
-	eng := engine.NewAgentEngine(llmProvider, registry, workDir, true)
+	eng := engine.NewAgentEngine(llmProvider, registry, true)
 	//prompt := `
 	//	我当前目录下有 a.txt, b.txt, c.txt 三个文件。
 	//	为了节省时间，请你同时一次性读取这三个文件，并将它们的内容综合起来，告诉我它们分别记录了什么领域的信息。
@@ -137,9 +137,10 @@ func main() {
 	//if err != nil {
 	//	log.Fatalf("服务器启动失败: %v", err)
 	//}
+
 	reporter := engine.NewTerminalReporter()
 	prompt := ` 我需要在当前目录下新建一个 ping.go，提供一个简单的 http ping 接口。 写完之后，帮我把代码用 git 提交一下。 `
-	err := eng.Run(context.Background(), prompt, reporter)
+	err := eng.Run(context.Background(), reporter)
 	if err != nil {
 		log.Fatalf("引擎运行崩溃: %v", err)
 	}
