@@ -22,7 +22,7 @@ func NewCompactor(maxChars int, retainLastMsgs int) *Compactor {
 
 // Compact 接收准备发送给大模型的消息数组。
 // 如果总长度超标，对远期历史区进行全量掩码 (Masking)，对短期保护区进行超长局部截断 (Truncation)
-func (c *Compactor) Compat(msgs []schema.Message) []schema.Message {
+func (c *Compactor) Compact(msgs []schema.Message) []schema.Message {
 	currentLength := c.estimateLength(msgs)
 	// 如果没有超过水位线，直接返回原数组 (大多数情况下的正常路径)
 	if currentLength <= c.MaxChars {

@@ -40,7 +40,7 @@ func (s *Session) Append(msgs ...schema.Message) {
 // GetWorkingMemory 是驾驭工程的核心！
 // 它不返回全量历史，而是从后往前截取最近的 N 条消息，形成 Agent 的“短期工作记忆”。
 func (s *Session) GetWorkingMemory(limit int) []schema.Message {
-	s.mu.RLocker()
+	s.mu.RLock()
 	defer s.mu.RUnlock()
 	total := len(s.history)
 	if total <= limit || limit <= 0 {

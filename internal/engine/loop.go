@@ -1,3 +1,4 @@
+// internal/engine/loop.go
 package engine
 
 import (
@@ -13,12 +14,11 @@ import (
 )
 
 type AgentEngine struct {
-	provider provider.LLMProvider
-	registry tools.Registry
-
-	WorkDir        string
-	EnableThinking bool //【新增】慢思考模式开关
-
+	provider       provider.LLMProvider
+	registry       tools.Registry
+	EnableThinking bool
+	composer       *ctxpkg.PromptComposer
+	compactor      *ctxpkg.Compactor // 【新增】压缩器实例
 }
 
 func NewAgentEngine(p provider.LLMProvider, r tools.Registry, enableThinking bool) *AgentEngine {
@@ -26,117 +26,101 @@ func NewAgentEngine(p provider.LLMProvider, r tools.Registry, enableThinking boo
 		provider:       p,
 		registry:       r,
 		EnableThinking: enableThinking,
+		// (假装这里能获取到 WorkDir 初始化 Composer，生产环境中应在 Run 中动态构造)
+		composer: ctxpkg.NewPromptComposer("."),
+		// 【初始化压缩器】：为了便于今天的极端测试，我们将水位线阈值设积极（例如 3000 字符），
+		// 并保护最近的 6 条消息（大约两轮 Turn 的交互）
+		compactor: ctxpkg.NewCompactor(3000, 6),
 	}
 }
 
-func (e *AgentEngine) Run(ctx context.Context, userPrompt string, reporter Reporter) error {
-	log.Printf("[Engine] 引擎启动，锁定工作区: %s\n", e.WorkDir)
+func (e *AgentEngine) Run(ctx context.Context, session *Session, reporter Reporter) error {
+	log.Printf("[Engine] 唤醒会话 [%s]，锁定工作区: %s\n", session.ID, session.WorkDir)
 
-	// 【核心修改】动态组装 System Prompt，彻底替换掉以前硬编码的面条提示词！
-	systemPrompt := e.composer.Build()
-
-	contextHistory := []schema.Message{
-		systemPrompt,
-		{
-			Role:    schema.RoleUser,
-			Content: userPrompt,
-		},
-	}
-
-	turnCount := 0
+	e.composer = ctxpkg.NewPromptComposer(session.WorkDir)
+	systemMsg := e.composer.Build()
 
 	for {
-		turnCount++
-		log.Printf("\n========== [Turn %d] 开始 ==========\n", turnCount)
-
 		availableTools := e.registry.GetAvailableTools()
 
+		// 1. 从 Session 提取出近期的 Working Memory (例如最近 20 条，给压缩器留下充足的判断空间)
+		workingMemory := session.GetWorkingMemory(20)
+
+		var contextHistory []schema.Message
+		contextHistory = append(contextHistory, systemMsg)
+		contextHistory = append(contextHistory, workingMemory...)
+
+		// 2. 【核心注入点】: 在向 Provider 发起推理前，过一遍内存压缩器！
+		// 无论你带出了多少上下文，如果字符总数超标，早期日志将被掩码化，超大日志将被掐头去尾
+		compactedContext := e.compactor.Compact(contextHistory)
+
+		// 3. 后续的 Provider.Generate 全面使用被保护过的新鲜上下文 (compactedContext)
 		// ================= Phase 1: Thinking =================
 		if e.EnableThinking {
 			if reporter != nil {
-				// [触发Reporter]:开始思考
 				reporter.OnThinking(ctx)
 			}
-			thinkResp, err := e.provider.Generate(ctx, contextHistory, nil) // 传入 nil 剥夺工具
+			thinkResp, err := e.provider.Generate(ctx, compactedContext, nil)
 			if err != nil {
-				return fmt.Errorf("Thinking 阶段生成失败: %w", err)
+				return fmt.Errorf("Thinking 阶段失败: %w", err)
 			}
 			if thinkResp.Content != "" {
-				fmt.Printf("🧠 [内部思考 Trace]: %s\n", thinkResp.Content)
-				contextHistory = append(contextHistory, *thinkResp)
+				session.Append(*thinkResp)
+				compactedContext = append(compactedContext, *thinkResp)
 			}
 		}
 
 		// ================= Phase 2: Action =================
-		log.Println("[Engine][Phase 2] 恢复工具挂载，等待模型采取行动...")
-		actionResp, err := e.provider.Generate(ctx, contextHistory, availableTools)
+		actionResp, err := e.provider.Generate(ctx, compactedContext, availableTools)
 		if err != nil {
-			return fmt.Errorf("Action 阶段生成失败: %w", err)
+			return fmt.Errorf("Action 阶段失败: %w", err)
 		}
 
-		contextHistory = append(contextHistory, *actionResp)
+		// 【驾驭精髓】：注意，写入 Session（硬盘/全量内存）的永远是全量的真实响应，不受 Compact 影响！
+		// Compact 只作用于本轮发给大模型的那个临时 Context。
+		session.Append(*actionResp)
+		compactedContext = append(compactedContext, *actionResp)
 
 		if actionResp.Content != "" && reporter != nil {
-			// 【触发 Reporter】: 输出阶段性总结或最终回复
 			reporter.OnMessage(ctx, actionResp.Content)
 		}
 
-		// ================= 执行判断 =================
+		// ... (执行工具与并发逻辑，与上一讲完全一致) ...
 		if len(actionResp.ToolCalls) == 0 {
-			log.Println("[Engine] 模型未请求调用工具，任务宣告完成。")
 			break
 		}
 
-		log.Printf("[Engine] 模型请求并发调用 %d 个工具...\n", len(actionResp.ToolCalls))
-
-		// 【核心改造开始】: 从串行 (Sequential) 演进为并行 (Parallel)
-		// 1. 预分配一个固定长度的切片，用于安全地存放各个并发工具的执行结果（Observation）
-		// 长度与 ToolCalls 的数量完全一致
 		observationMsgs := make([]schema.Message, len(actionResp.ToolCalls))
-		// 2. 声明 WaitGroup 用于阻塞等待所有协程完成
 		var wg sync.WaitGroup
-		// 3. 遍历模型请求的所有工具，为每一个工具单独 Fork 出一个 Goroutine
+
 		for i, toolCall := range actionResp.ToolCalls {
-			wg.Add(1) // 添加一个任务
+			wg.Add(1)
 			go func(idx int, call schema.ToolCall) {
-				defer wg.Done() // 协程结束时技术减1
+				defer wg.Done()
 				if reporter != nil {
-					// 【触发 Reporter】: 报告即将在底层执行的工具
 					reporter.OnToolCall(ctx, call.Name, string(call.Arguments))
 				}
-				//	调用底层Registry执行工具
-				result := e.registry.Execute(ctx, toolCall)
+
+				result := e.registry.Execute(ctx, call)
 
 				if reporter != nil {
-					// 为了防止大文件读取导致飞书消息过长被截断，我们仅汇报工具执行状态
-					// 注意：传递给大模型的 observationMsgs 依然是完整数据，只是人类看到的 Reporter 是缩略版
 					displayOutput := result.Output
 					if len(displayOutput) > 200 {
-						displayOutput = displayOutput[:200] + "...(已截断)"
+						displayOutput = displayOutput[:200] + "... (已截断)"
 					}
-					// 【触发 Reporter】: 汇报工具物理执行的结果
-					reporter.OnToolResult(ctx, toolCall.Name, displayOutput, result.IsError)
+					reporter.OnToolResult(ctx, call.Name, displayOutput, result.IsError)
 				}
-
-				obsMsg := schema.Message{
+				observationMsgs[idx] = schema.Message{
 					Role:       schema.RoleUser,
 					Content:    result.Output,
-					ToolCallID: toolCall.ID,
+					ToolCallID: call.ID,
 				}
-				// 【线程安全】: 由于每个 Goroutine 操作的是预分配切片的不同索引，
-				// 这里不需要加锁 (Mutex)，性能极高！
-				observationMsgs[idx] = obsMsg
 			}(i, toolCall)
-			// 4. Join 阻塞等待：主循环挂起，直到所有的并发协程全部执行完毕
-			wg.Wait()
-			log.Println("[Engine] 所有并发工具执行完毕，开始聚合观察结果 (Observation)...")
-			// 5. 聚合装填：将并行的结果，按照原本的顺序，一次性追加到上下文时间线中
-			// 这等价于 contextHistory = append(contextHistory, observationMsgs...)
-			for _, obs := range observationMsgs {
-				contextHistory = append(contextHistory, obs)
-
-			}
 		}
+		wg.Wait()
+
+		// 将全量观测结果持久化到 Session 中
+		session.Append(observationMsgs...)
 	}
 
 	return nil
