@@ -3,8 +3,6 @@ package main
 
 import (
 	"context"
-	"flag"
-	"fmt"
 	"log"
 	"os"
 
@@ -79,43 +77,6 @@ func init() {
 	_ = godotenv.Load()
 }
 func main() {
-	//fmt.Println("🚀 欢迎来到 go-tiny-claw 引擎启动序列")
-	//
-	//workDir, _ := os.Getwd()
-	//p := &mockProvider{}
-	//r := &mockRegistry{}
-	//eng := engine.NewAgentEngine(p, r, workDir, true)
-	//err := eng.Run(context.Background(), "帮我检查一下当前目录下的文件并输出一个 README.md 大纲")
-	//if err != nil {
-	//	log.Fatalf("引擎运行崩溃: %v", err)
-	//}
-	// TODO: 1. 初始化模型 Provider (大脑)
-	// provider := provider.NewClaudeProvider(...)
-
-	// TODO: 2. 初始化 Tool Registry (手脚)
-	// registry := tools.NewRegistry()
-	// registry.Register(tools.NewBashTool())
-
-	// TODO: 3. 初始化上下文管理器 (内存管理器)
-	// ctxManager := context.NewManager(...)
-
-	// TODO: 4. 组装并启动核心 Engine (操作系统心脏)
-	// eng := eng.NewAgentEngine(provider, registry, ctxManager)
-
-	// fmt.Println("开始执行任务...")
-	// err := eng.Run("帮我检查一下当前目录下的文件并输出一个 README.md 大纲")
-	// if err != nil {
-	//  log.Fatalf("引擎运行崩溃: %v", err)
-	// }
-
-	//log.Println("架构蓝图搭建完毕，等待各核心模块注入！")
-	//通过命令行参数接收用户的 prompt
-	promptPtr := flag.String("prompt", "", "要交给 Agent 执行的任务描述")
-	flag.Parse()
-	if *promptPtr == "" {
-		fmt.Println("用法: go run cmd/claw/main.go -prompt \"你的任务指令\"")
-		os.Exit(1)
-	}
 	// 从 .env 加载配置（若存在）；不覆盖已存在的环境变量，缺失时静默回退到 shell 环境
 	if os.Getenv("ZHIPU_API_KEY") == "" {
 		log.Fatal("请先导出 ZHIPU_API_KEY 环境变量（或在项目根目录创建 .env 文件）")
@@ -128,31 +89,18 @@ func main() {
 	registry.Register(tools.NewWriteFileTool(workDir))
 	registry.Register(tools.NewBashTool(workDir))
 	// 实例化引擎 (关闭思考模式以提速)
-	eng := engine.NewAgentEngine(llmProvider, registry, false, true)
+	eng := engine.NewAgentEngine(llmProvider, registry, false, false)
 	reporter := engine.NewTerminalReporter()
-	sessionID := "task_web_server_01"
+	sessionID := "task_recovery_01"
 	sess := engine.GlobalSessionManager.GetOrCreate(sessionID, workDir)
-	log.Printf("\n>>> 🚀 收到指令: %s\n", *promptPtr)
-	// 发起一个会导致读取大文件的恶意任务
-	//prompt := ` 请帮我执行以下三个步骤： 1. 使用 bash 执行 echo "开始排查日志" 2. 使用 read_file 工具读取当前目录下的巨大文件 mock_log.txt 3. 使用 bash 执行 date 命令获取当前时间，并告诉我任务全部完成。 `
-	sess.Append(schema.Message{Role: schema.RoleUser, Content: *promptPtr})
+	// 这是一个巨大的陷阱指令：
+	// 我们不给它查看文件的机会，直接命令它凭初始上下文去修改文件，目的是诱发 old_text 不匹配的错误。
+	prompt := ` 我当前目录下有一个 auth.go 文件。 请修改 auth.go 中的 login 函数。 请直接使用 edit_file 工具替换下面的代码块，将判断条件改为同时允许"admin"、"root"和"guest"三种用户登录： // 鉴权入口函数 func login(user string) bool { // 检查用户名 if user == "admin" { return true } return false }`
+	log.Println("\n>>> 🚀 启动自愈测试任务...")
+	sess.Append(schema.Message{Role: schema.RoleUser, Content: prompt})
 	err := eng.Run(context.Background(), sess, reporter)
 	if err != nil {
 		log.Fatalf("引擎运行崩溃: %v", err)
 	}
-	//prompt := `
-	//	我当前目录下有 a.txt, b.txt, c.txt 三个文件。
-	//	为了节省时间，请你同时一次性读取这三个文件，并将它们的内容综合起来，告诉我它们分别记录了什么领域的信息。
-	//`
-	// 2.初始化飞书 Bot 调度器
-	//bot := feishu.NewFeishuBot(eng)
-	//handler := httpserverext.NewEventHandlerFunc(bot.GetEventDispatcher())
-	//http.HandleFunc("/webhook/event", handler)
-	//port := ":48080"
-	//log.Printf("🚀 go-tiny-claw 飞书服务端已启动，正在监听 %s 端口\n", port)
-	//err := http.ListenAndServe(port, nil)
-	////err := eng.Run(context.Background(), prompt)
-	//if err != nil {
-	//	log.Fatalf("服务器启动失败: %v", err)
-	//}
+
 }
