@@ -21,6 +21,7 @@ type AgentEngine struct {
 	PlanMode       bool
 	compactor      *ctxpkg.Compactor // 【新增】压缩器实例
 	recovery       *ctxpkg.RecoveryManager
+	injector       *ReminderInject
 }
 
 func NewAgentEngine(p provider.LLMProvider, r tools.Registry, enableThinking bool, planMode bool) *AgentEngine {
@@ -31,6 +32,7 @@ func NewAgentEngine(p provider.LLMProvider, r tools.Registry, enableThinking boo
 		PlanMode:       planMode,
 		compactor:      ctxpkg.NewCompactor(20000, 6),
 		recovery:       ctxpkg.NewRecoveryManager(),
+		injector:       NewReminderInject(),
 	}
 }
 
@@ -99,6 +101,9 @@ func (e *AgentEngine) Run(ctx context.Context, session *Session, reporter Report
 		observationMsgs := make([]schema.Message, len(actionResp.ToolCalls))
 		var wg sync.WaitGroup
 
+		var lastToolCall schema.ToolCall
+		var lastToolResult schema.ToolResult
+
 		for i, toolCall := range actionResp.ToolCalls {
 			wg.Add(1)
 			go func(idx int, call schema.ToolCall) {
@@ -134,6 +139,10 @@ func (e *AgentEngine) Run(ctx context.Context, session *Session, reporter Report
 
 		// 将全量观测结果持久化到 Session 中
 		session.Append(observationMsgs...)
+		reminderMsg := e.injector.CheckAndInject(lastToolCall, lastToolResult)
+		if reminderMsg != nil {
+			session.Append(*reminderMsg)
+		}
 	}
 
 	return nil
