@@ -19,9 +19,11 @@ type FeishuBot struct {
 	appID     string
 	appSecret string
 	engine    *engine.AgentEngine // 持有核心引擎饮用
+	sess      *engine.Session     // 新增session信息
+	r         *FeishuReporter     // 新增实现Reporter接口的FeishuReporter实例
 }
 
-func NewFeishuBot(eng *engine.AgentEngine) *FeishuBot {
+func NewFeishuBot(eng *engine.AgentEngine, sess *engine.Session) *FeishuBot {
 	appID := os.Getenv("FEISHU_APP_ID")
 	appSecret := os.Getenv("FEISHU_APP_SECRET")
 	if appID == "" || appSecret == "" {
@@ -35,6 +37,7 @@ func NewFeishuBot(eng *engine.AgentEngine) *FeishuBot {
 		appID:     appID,
 		appSecret: appSecret,
 		engine:    eng,
+		sess:      sess,
 	}
 }
 
@@ -53,8 +56,24 @@ func (b *FeishuBot) GetEventDispatcher() *dispatcher.EventDispatcher {
 
 			chatId := *event.Event.Message.ChatId
 			log.Printf("[Feishu] 收到会话 %s 消息: %s\n", chatId, contentStr)
-			// 【驾驭并发】：收到消息后，绝不能阻塞 HTTP 回调。
-			// 我们要为每个请求开启一个独立的 Goroutine 跑 Agent 任务
+			// 【新增】：拦截人工审批的特殊口令
+			if strings.HasPrefix(contentStr, "approve") {
+				taskID := strings.TrimPrefix(contentStr, "approve ")
+				taskID = strings.TrimSpace(taskID)
+				// 唤醒挂起的引擎协程！
+				GlobalApprovalManager.ResolveApproval(taskID, true, "人类管理员已批准操作")
+				log.Printf("[Feishu] 会话 %s: ✅ 已为您批准任务 %s", chatId, taskID)
+				return nil
+			}
+			if strings.HasPrefix(contentStr, "reject") {
+				taskID := strings.TrimPrefix(contentStr, "reject ")
+				taskID = strings.TrimSpace(taskID)
+				// 唤醒挂起的引擎协程！
+				GlobalApprovalManager.ResolveApproval(taskID, false, "人类管理员拒绝了操作")
+				log.Printf("[Feishu] 会话 %s: ❌ 已为您拒绝任务 %s", chatId, taskID)
+				return nil
+			}
+			// 如果不是审批命令，则是正常对话，启动一个新的 Agent 任务去处理
 			go b.handleAgentRun(chatId, contentStr)
 			return nil
 		}).
@@ -65,6 +84,10 @@ func (b *FeishuBot) GetEventDispatcher() *dispatcher.EventDispatcher {
 	return handler
 }
 
+// 新增一个方法，返回FeishuBot绑定的Reporter
+func (b *FeishuBot) Reporter() *FeishuReporter {
+	return b.r
+}
 func (b *FeishuBot) handleAgentRun(chatId string, prompt string) {
 	// 为当前聊天窗口实例化一个专属的 Reporter
 	reporter := &FeishuReporter{
@@ -72,7 +95,7 @@ func (b *FeishuBot) handleAgentRun(chatId string, prompt string) {
 		chatId: chatId,
 	}
 	// 启动引擎
-	err := b.engine.Run(context.Background(), prompt, reporter)
+	err := b.engine.Run(context.Background(), b.sess, reporter)
 	if err != nil {
 		reporter.sendMsg(fmt.Sprintf("❌ Agent 运行崩溃: %v", err))
 	}

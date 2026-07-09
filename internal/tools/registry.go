@@ -9,6 +9,8 @@ import (
 	"github.com/liang21/go-tiny-claw/internal/schema"
 )
 
+type MiddlewareFunc func(ctx context.Context, call schema.ToolCall) (allow bool, rejectReason string)
+
 type BaseTool interface {
 	Name() string
 	Definition() schema.ToolDefinition
@@ -17,17 +19,20 @@ type BaseTool interface {
 
 type Registry interface {
 	Register(tool BaseTool)
+	Use(mw MiddlewareFunc)
 	GetAvailableTools() []schema.ToolDefinition
 	Execute(ctx context.Context, call schema.ToolCall) schema.ToolResult
 }
 
 type registryImpl struct {
-	tools map[string]BaseTool
+	tools      map[string]BaseTool
+	middleware []MiddlewareFunc //【新增】保存挂载的中间件链
 }
 
 func NewRegistry() Registry {
 	return &registryImpl{
-		tools: make(map[string]BaseTool),
+		tools:      make(map[string]BaseTool),
+		middleware: make([]MiddlewareFunc, 0),
 	}
 }
 
@@ -40,6 +45,9 @@ func (r *registryImpl) Register(tool BaseTool) {
 	log.Printf("[Registry] 成功挂载工具: %s\n", name)
 }
 
+func (r *registryImpl) Use(mw MiddlewareFunc) {
+	r.middleware = append(r.middleware, mw)
+}
 func (r *registryImpl) GetAvailableTools() []schema.ToolDefinition {
 	var defs []schema.ToolDefinition
 	for _, tool := range r.tools {
@@ -59,7 +67,19 @@ func (r *registryImpl) Execute(ctx context.Context, call schema.ToolCall) schema
 			ToolCallID: call.ID,
 		}
 	}
-	// 2. 执行工具逻辑：将原始的 JSON 字节流直接丢给具体工具
+	// 2. 【核心防御】在执行底层逻辑前，依次运行所有的 Middleware
+	for _, mw := range r.middleware {
+		allow, rejectReason := mw(ctx, call)
+		log.Printf("[Registry] ⚠️ 工具 %s 被 Middleware 拦截: %s\n", call.Name, rejectReason)
+		if !allow {
+			return schema.ToolResult{
+				IsError:    true,
+				Output:     fmt.Sprintf("执行被系统拦截。原因: %s", rejectReason),
+				ToolCallID: call.ID,
+			}
+		}
+	}
+	// 3. 执行工具逻辑 (如果所有 Middleware 都放行了)
 	output, err := tool.Execute(ctx, call.Arguments)
 	if err != nil {
 		errMsg := fmt.Sprintf("Error executing %s: %v", call.Name, err)

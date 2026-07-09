@@ -4,10 +4,13 @@ package main
 import (
 	"context"
 	"log"
+	"net/http"
 	"os"
 
 	"github.com/joho/godotenv"
+	"github.com/larksuite/oapi-sdk-go/v3/core/httpserverext"
 	"github.com/liang21/go-tiny-claw/internal/engine"
+	"github.com/liang21/go-tiny-claw/internal/feishu"
 	"github.com/liang21/go-tiny-claw/internal/provider"
 	"github.com/liang21/go-tiny-claw/internal/schema"
 	"github.com/liang21/go-tiny-claw/internal/tools"
@@ -84,22 +87,59 @@ func main() {
 	workDir, _ := os.Getwd()
 	workDir += "/workspace"
 	llmProvider := provider.NewZhipuOpenAIProvider("glm-4.5-air")
+
 	registry := tools.NewRegistry()
 	registry.Register(tools.NewReadFileTool(workDir))
 	registry.Register(tools.NewWriteFileTool(workDir))
 	registry.Register(tools.NewBashTool(workDir))
 	registry.Register(tools.NewEditFileTool(workDir))
-	// 实例化引擎 (关闭思考模式以提速)
+
 	eng := engine.NewAgentEngine(llmProvider, registry, false, false)
-	reporter := engine.NewTerminalReporter()
-	sessionID := "test_doom_loop_001"
+
+	// 假设一个bot绑定一个session
+	sessionID := "test_command_intercept_001"
+
 	sess := engine.GlobalSessionManager.GetOrCreate(sessionID, workDir)
-	prompt := ` 帮我读取当前目录下的 secret_key.txt。 注意：我们的文件系统现在非常不稳定，经常报 File Not Found。 如果报错了，请你【千万不要改变参数】，直接原样再次调用 read_file 尝试，直到成功或连续重试 5 次为止。 `
-	log.Println("\n>>> 🚀 启动死循环干预测试...")
-	sess.Append(schema.Message{Role: schema.RoleUser, Content: prompt})
-	err := eng.Run(context.Background(), sess, reporter)
+	sess.Append(schema.Message{Role: schema.RoleUser, Content: ""})
+
+	bot := feishu.NewFeishuBot(eng, sess)
+	handler := httpserverext.NewEventHandlerFunc(bot.GetEventDispatcher())
+	// 【核心注入】注册安全拦截 Middleware
+	registry.Use(func(ctx context.Context, call schema.ToolCall) (bool, string) {
+		argsStr := string(call.Arguments)
+		//	检查是否命中高危特征库
+		if feishu.IsDangerousCommand(call.Name, argsStr) {
+			taskID := call.ID
+			// 挂起当前协程，发送消息给飞书，死死等待人类的审批！
+			allowed, reason := feishu.GlobalApprovalManager.WaitForApproval(taskID, call.Name, argsStr, bot.Reporter())
+			if allowed {
+				return false, reason
+			}
+			return true, ""
+		}
+		return true, ""
+	})
+
+	// 3. 注册路由并启动 HTTP 服务
+	http.HandleFunc("/webhook/event", handler)
+
+	port := ":48080"
+	log.Printf("🚀 go-tiny-claw 飞书服务端已启动，正在监听 %s 端口\n", port)
+	err := http.ListenAndServe(port, nil)
 	if err != nil {
-		log.Fatalf("引擎运行崩溃: %v", err)
+		log.Fatalf("服务器启动失败: %v", err)
 	}
+	//// 实例化引擎 (关闭思考模式以提速)
+	//eng := engine.NewAgentEngine(llmProvider, registry, false, false)
+	//reporter := engine.NewTerminalReporter()
+	//sessionID := "test_doom_loop_001"
+	//sess := engine.GlobalSessionManager.GetOrCreate(sessionID, workDir)
+	//prompt := ` 帮我读取当前目录下的 secret_key.txt。 注意：我们的文件系统现在非常不稳定，经常报 File Not Found。 如果报错了，请你【千万不要改变参数】，直接原样再次调用 read_file 尝试，直到成功或连续重试 5 次为止。 `
+	//log.Println("\n>>> 🚀 启动死循环干预测试...")
+	//sess.Append(schema.Message{Role: schema.RoleUser, Content: prompt})
+	//err := eng.Run(context.Background(), sess, reporter)
+	//if err != nil {
+	//	log.Fatalf("引擎运行崩溃: %v", err)
+	//}
 
 }
