@@ -12,8 +12,14 @@ type Session struct {
 	WorkDir   string
 	CreatedAt time.Time
 	UpdatedAt time.Time
-	history   []schema.Message
-	mu        sync.RWMutex
+
+	// [新增]用于统计该Session累积消耗的资源
+	TotalPromptTokens     int
+	TotalCompletionTokens int
+	TotalCostCNY          float64
+
+	history []schema.Message
+	mu      sync.RWMutex
 }
 
 func NewSession(id string, workDir string) *Session {
@@ -24,6 +30,14 @@ func NewSession(id string, workDir string) *Session {
 		UpdatedAt: time.Now(),
 		history:   make([]schema.Message, 0),
 	}
+}
+
+func (s *Session) RecordUsage(prompt int, completion int, cost float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.TotalPromptTokens += prompt
+	s.TotalCompletionTokens += completion
+	s.TotalCostCNY += cost
 }
 
 // Append 线程安全地向 Session 中追加消息

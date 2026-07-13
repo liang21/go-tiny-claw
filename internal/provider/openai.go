@@ -107,11 +107,19 @@ func (p *OpenAIProvider) Generate(ctx context.Context, msgs []schema.Message, av
 	if len(resp.Choices) == 0 {
 		return nil, fmt.Errorf("API 返回了空的 Choices")
 	}
+
 	// 4. 将 API Response 反向翻译为内部 schema.Message
 	choice := resp.Choices[0].Message
 	resultMsg := &schema.Message{
 		Role:    schema.RoleAssistant,
 		Content: choice.Content,
+	}
+	// [新增]提取Usage信息
+	if resp.Usage.PromptTokens > 0 || resp.Usage.CompletionTokens > 0 {
+		resultMsg.Usage = &schema.Usage{
+			PromptTokens:     int(resp.Usage.PromptTokens),
+			CompletionTokens: int(resp.Usage.CompletionTokens),
+		}
 	}
 	for _, tc := range choice.ToolCalls {
 		resultMsg.ToolCalls = append(resultMsg.ToolCalls, schema.ToolCall{

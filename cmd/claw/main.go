@@ -8,6 +8,7 @@ import (
 
 	"github.com/joho/godotenv"
 	"github.com/liang21/go-tiny-claw/internal/engine"
+	"github.com/liang21/go-tiny-claw/internal/observability"
 	"github.com/liang21/go-tiny-claw/internal/provider"
 	"github.com/liang21/go-tiny-claw/internal/schema"
 	"github.com/liang21/go-tiny-claw/internal/tools"
@@ -82,23 +83,34 @@ func main() {
 		log.Fatal("请先导出 ZHIPU_API_KEY 环境变量（或在项目根目录创建 .env 文件）")
 	}
 	workDir, _ := os.Getwd()
-	workDir += "/workspace"
-	llmProvider := provider.NewZhipuOpenAIProvider("glm-4.5-air")
+	modelName := "glm-4.5-air"
+	//workDir += "/workspace"
+	llmProvider := provider.NewZhipuOpenAIProvider(modelName)
+	sessionID := "test_observability_001"
+
+	sess := engine.GlobalSessionManager.GetOrCreate(sessionID, workDir)
+
+	// 2. 核心拼装：用 Tracker 将真实的大脑包裹起来
+	trackerProvider := observability.NewCostTracker(llmProvider, modelName, sess)
+	registry := tools.NewRegistry()
+	registry.Register(tools.NewBashTool(workDir))
+
+	eng := engine.NewAgentEngine(trackerProvider, registry, false, false)
 
 	reporter := engine.NewTerminalReporter()
-	// 【防御沙箱】为子智能体准备受限的只读注册表
-	readOnlyRegistry := tools.NewRegistry()
-	readOnlyRegistry.Register(tools.NewReadFileTool(workDir))
-	readOnlyRegistry.Register(tools.NewBashTool(workDir))
-	// 为主智能体准备全功能注册表
-	registry := tools.NewRegistry()
-	registry.Register(tools.NewReadFileTool(workDir))
-	registry.Register(tools.NewWriteFileTool(workDir))
-	registry.Register(tools.NewBashTool(workDir))
-	registry.Register(tools.NewEditFileTool(workDir))
-
-	eng := engine.NewAgentEngine(llmProvider, registry, false, false)
-
+	prompt := `请用 bash 帮我用 date 命令查一下现在的时间。`
+	log.Println("\n>>> 🚀 启动带仪表盘的可观测性测试...")
+	sess.Append(schema.Message{Role: schema.RoleUser, Content: prompt})
+	err := eng.Run(context.Background(), sess, reporter)
+	if err != nil {
+		log.Fatalf("引擎运行崩溃: %v", err)
+	}
+	log.Printf("\n================ 财务报表 ================\n")
+	log.Printf("会话 ID: %s\n", sess.ID)
+	log.Printf("总消耗 Input Tokens: %d\n", sess.TotalPromptTokens)
+	log.Printf("总消耗 Output Tokens: %d\n", sess.TotalCompletionTokens)
+	log.Printf("总计费用 (CNY): ¥%.6f\n", sess.TotalCostCNY)
+	log.Printf("==========================================\n")
 	//// 假设一个bot绑定一个session
 	//sessionID := "test_command_intercept_001"
 	//
@@ -135,19 +147,5 @@ func main() {
 	//// 实例化引擎 (关闭思考模式以提速)
 	//eng := engine.NewAgentEngine(llmProvider, registry, false, false)
 	//reporter := engine.NewTerminalReporter()
-	registry.Register(tools.NewSubAgentTool(eng, registry, reporter))
-	sessionID := "test_subagent_001"
-	sess := engine.GlobalSessionManager.GetOrCreate(sessionID, workDir)
-	prompt := ` 
-		我需要你在这个遗留项目里，找到那个“核心密码”。 
-		为了防止污染主上下文，请你务必派出子智能体（spawn_subagent）去执行探索任务。 
-		你可以让子智能体使用 bash 去查找当前目录（及其所有子目录）下名为 config.txt 的文件。 
-		ss子智能体拿到密码向你汇报后，请你亲自使用 write_file 工具，将密码写在根目录的 answer.txt 里。 `
-	log.Println("\n>>> 🚀 启动多智能体协同测试...")
-	sess.Append(schema.Message{Role: schema.RoleUser, Content: prompt})
-	err := eng.Run(context.Background(), sess, reporter)
-	if err != nil {
-		log.Fatalf("引擎运行崩溃: %v", err)
-	}
 
 }
