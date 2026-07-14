@@ -1,4 +1,3 @@
-// internal/engine/loop.go
 package engine
 
 import (
@@ -9,6 +8,7 @@ import (
 	"sync"
 
 	ctxpkg "github.com/liang21/go-tiny-claw/internal/context"
+	"github.com/liang21/go-tiny-claw/internal/observability"
 	"github.com/liang21/go-tiny-claw/internal/provider"
 	"github.com/liang21/go-tiny-claw/internal/schema"
 	"github.com/liang21/go-tiny-claw/internal/tools"
@@ -36,13 +36,30 @@ func NewAgentEngine(p provider.LLMProvider, r tools.Registry, enableThinking boo
 	}
 }
 
-func (e *AgentEngine) Run(ctx context.Context, session *Session, reporter Reporter) error {
+func (e *AgentEngine) Run(ctx context.Context, session *ctxpkg.Session, reporter Reporter) error {
 	log.Printf("[Engine] 唤醒会话 [%s]，锁定工作区: %s\n", session.ID, session.WorkDir)
+	// 【埋点 1】：开启 Root Span，记录整个任务的生命周期
+	ctx, rootSpan := observability.StartSpan(ctx, "Agent.Run")
+	rootSpan.AddAttribute("session_id", session.ID)
+	rootSpan.AddAttribute("work_dir", session.WorkDir)
+
+	// defer 保证在引擎退出时，无论成功失败，都能结束根 Span 并导出 Trace 报告
+	defer func() {
+		rootSpan.EndSpan()
+		_ = observability.ExportTraceToFile(rootSpan, session.WorkDir, session.ID)
+		log.Printf("📊 [Tracing] 本次任务的执行回放链路已保存至工作区的 .claw/traces 目录下\n")
+	}()
 
 	composer := ctxpkg.NewPromptComposer(session.WorkDir, e.PlanMode)
 	systemMsg := composer.Build()
+	turnCount := 0
 
 	for {
+		turnCount++
+		// 【埋点 2】：记录单次 Turn 循环
+		turnCtx, turnSpan := observability.StartSpan(ctx, fmt.Sprintf("Turn-%d", turnCount))
+		defer turnSpan.EndSpan()
+
 		availableTools := e.registry.GetAvailableTools()
 
 		// 1. 从 Session 提取出近期的 Working Memory (例如最近 20 条，给压缩器留下充足的判断空间)
@@ -64,7 +81,10 @@ func (e *AgentEngine) Run(ctx context.Context, session *Session, reporter Report
 			if reporter != nil {
 				reporter.OnThinking(ctx)
 			}
-			thinkResp, err := e.provider.Generate(ctx, compactedContext, nil)
+			// 【埋点 3】：记录 Thinking 调用
+			thinkCtx, thinkSpan := observability.StartSpan(turnCtx, "LLM.Thinking")
+			thinkResp, err := e.provider.Generate(thinkCtx, compactedContext, nil)
+			thinkSpan.EndSpan()
 			if err != nil {
 				return fmt.Errorf("Thinking 阶段失败: %w", err)
 			}
@@ -75,7 +95,11 @@ func (e *AgentEngine) Run(ctx context.Context, session *Session, reporter Report
 		}
 
 		// ================= Phase 2: Action =================
-		actionResp, err := e.provider.Generate(ctx, compactedContext, availableTools)
+		// 【埋点 4】：记录 Action 调用
+		actCtx, actSpan := observability.StartSpan(turnCtx, "LLM.Action")
+
+		actionResp, err := e.provider.Generate(actCtx, compactedContext, availableTools)
+		actSpan.EndSpan()
 		if err != nil {
 			return fmt.Errorf("Action 阶段失败: %w", err)
 		}
@@ -95,6 +119,7 @@ func (e *AgentEngine) Run(ctx context.Context, session *Session, reporter Report
 
 		// ... (执行工具与并发逻辑，与上一讲完全一致) ...
 		if len(actionResp.ToolCalls) == 0 {
+			turnSpan.EndSpan()
 			break
 		}
 
@@ -112,7 +137,7 @@ func (e *AgentEngine) Run(ctx context.Context, session *Session, reporter Report
 					reporter.OnToolCall(ctx, call.Name, string(call.Arguments))
 				}
 
-				result := e.registry.Execute(ctx, call)
+				result := e.registry.Execute(turnCtx, call)
 
 				finalOutput := result.Output
 				if result.IsError {
@@ -136,7 +161,7 @@ func (e *AgentEngine) Run(ctx context.Context, session *Session, reporter Report
 			}(i, toolCall)
 		}
 		wg.Wait()
-
+		turnSpan.EndSpan()
 		// 将全量观测结果持久化到 Session 中
 		session.Append(observationMsgs...)
 		reminderMsg := e.injector.CheckAndInject(lastToolCall, lastToolResult)

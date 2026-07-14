@@ -11,6 +11,7 @@ import (
 	lark "github.com/larksuite/oapi-sdk-go/v3"
 	"github.com/larksuite/oapi-sdk-go/v3/event/dispatcher"
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
+	context2 "github.com/liang21/go-tiny-claw/internal/context"
 	"github.com/liang21/go-tiny-claw/internal/engine"
 )
 
@@ -19,11 +20,11 @@ type FeishuBot struct {
 	appID     string
 	appSecret string
 	engine    *engine.AgentEngine // 持有核心引擎饮用
-	sess      *engine.Session     // 新增session信息
+	sess      *context2.Session   // 新增session信息
 	r         *FeishuReporter     // 新增实现Reporter接口的FeishuReporter实例
 }
 
-func NewFeishuBot(eng *engine.AgentEngine, sess *engine.Session) *FeishuBot {
+func NewFeishuBot(eng *engine.AgentEngine, sess *context2.Session) *FeishuBot {
 	appID := os.Getenv("FEISHU_APP_ID")
 	appSecret := os.Getenv("FEISHU_APP_SECRET")
 	if appID == "" || appSecret == "" {

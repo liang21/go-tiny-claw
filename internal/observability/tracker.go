@@ -5,7 +5,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/liang21/go-tiny-claw/internal/engine"
+	ctxpkg "github.com/liang21/go-tiny-claw/internal/context"
 	"github.com/liang21/go-tiny-claw/internal/provider"
 	"github.com/liang21/go-tiny-claw/internal/schema"
 )
@@ -24,11 +24,11 @@ var PricingModel = map[string]struct {
 type CostTracker struct {
 	nextProvider provider.LLMProvider
 	modelName    string
-	session      *engine.Session
+	session      *ctxpkg.Session
 }
 
 // NewCostTracker 构造函数：接收一个现有的 Provider，返回一个被监控的 Provider
-func NewCostTracker(next provider.LLMProvider, modelName string, session *engine.Session) *CostTracker {
+func NewCostTracker(next provider.LLMProvider, modelName string, session *ctxpkg.Session) *CostTracker {
 	return &CostTracker{
 		nextProvider: next,
 		modelName:    modelName,

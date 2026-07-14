@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 
+	"github.com/liang21/go-tiny-claw/internal/observability"
 	"github.com/liang21/go-tiny-claw/internal/schema"
 )
 
@@ -57,6 +58,11 @@ func (r *registryImpl) GetAvailableTools() []schema.ToolDefinition {
 }
 
 func (r *registryImpl) Execute(ctx context.Context, call schema.ToolCall) schema.ToolResult {
+	// 【埋点 5】：开启工具执行的 Span
+	ctx, span := observability.StartSpan(ctx, "Tool.Execute")
+	span.AddAttribute("tool_name", call.Name)
+	span.AddAttribute("tool_args", string(call.Arguments))
+	defer span.EndSpan()
 	// 1. 路由查找：如果在注册表中找不到该工具，这是模型产生了幻觉，直接向模型抛出错误
 	tool, exits := r.tools[call.Name]
 	if !exits {
@@ -89,9 +95,18 @@ func (r *registryImpl) Execute(ctx context.Context, call schema.ToolCall) schema
 			ToolCallID: call.ID,
 		}
 	}
+	// 我们甚至可以只截取输出的前 100 字符放入 Trace，防止 Trace 文件过度膨胀
+	span.AddAttribute("output_preview", truncate(output, 100))
 	return schema.ToolResult{
 		IsError:    false,
 		Output:     output,
 		ToolCallID: call.ID,
 	}
+}
+
+func truncate(output string, max int) string {
+	if len(output) > max {
+		return output[:max] + "..."
+	}
+	return output
 }
