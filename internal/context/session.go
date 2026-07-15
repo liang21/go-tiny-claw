@@ -66,7 +66,7 @@ func (s *Session) GetWorkingMemory(limit int) []schema.Message {
 	// 截取最近的 limit 条消息
 	res := make([]schema.Message, limit)
 	copy(res, s.history[total-limit:])
-	// 【驾驭防线】：大模型 API 强制要求历史消息的连续性！
+	// 【驾驭防线 1】：大模型 API 强制要求历史消息的连续性！
 	// 如果我们截断的第一条消息恰好是一个 ToolResult (RoleUser 且含有 ToolCallID)，
 	// 但发出这个请求的 ToolCall 被我们截断抛弃了，大模型 API 会直接报 400 Bad Request。
 	// 因此，如果切片首条属于“孤儿”工具响应，我们必须将其强行舍弃，顺延到下一条正常的 User/Assistant 消息
@@ -75,6 +75,20 @@ func (s *Session) GetWorkingMemory(limit int) []schema.Message {
 			res = res[1:]
 		} else {
 			break
+		}
+	}
+	// 【驾驭防线 2】：GLM 等大模型要求 system 之后的首条消息必须是「真正的 user 消息」。
+	// 一旦历史增长到超过 limit，原始任务(history[0]) 会被滑出窗口，导致 res 以 assistant 消息开头，
+	// 大模型会直接以 "messages 参数非法" (code 1214) 拒绝整包请求。
+	// 因此当窗口头部不是真正的 user 消息时，把整段历史里的第一条真实 user 消息（用户的原始任务）
+	// 重新钉在最前面，既锚定了对话起点，也让模型始终记得自己要完成的目标。
+	if len(res) == 0 || res[0].Role != schema.RoleUser || res[0].ToolCallID != "" {
+		for i := range s.history {
+			anchor := s.history[i]
+			if anchor.Role == schema.RoleUser && anchor.ToolCallID == "" {
+				res = append([]schema.Message{anchor}, res...)
+				break
+			}
 		}
 	}
 	return res
