@@ -72,17 +72,23 @@ func (m *ApprovalManager) ResolveApproval(taskID string, allowed bool, reason st
 
 // IsDangerousCommand 简单的正则检查黑名单，判断该工具调用是否需要审批
 func IsDangerousCommand(toolName string, args string) bool {
-	// 对于纯读取的工具，默认 YOLO 模式，全部放行
-	if toolName != "bash" && toolName != "write_file" && toolName != "read_file" {
+	// 白名单放行：对于纯读取工具，默认 YOLO 模式，全部放行
+	if toolName == "read_file" {
 		return false
+	}
+	if toolName == "bash" || toolName == "write_file" {
+		return true
 	}
 	//	针对bash的高危模式匹配
 	if toolName == "bash" {
 		dangerousPatterns := []string{
-			`rm\s+-r`, // 级联删除
-			`sudo\s+`, // 提权
-			`drop\s+`, // 数据库删除
-			`>.*\.go`, // 恶意覆盖源代码
+			`rm\s+-r`,      // 级联删除
+			`sudo\s+`,      // 提权
+			`drop\s+`,      // 数据库删除
+			`>.*\.go`,      // 恶意覆盖源代码
+			`nginx\s+-s`,   // 【针对第 22 讲剧本】：拦截 Nginx 服务重启或停止
+			`systemctl\s+`, // 拦截系统级服务管理
+			`kill\s+`,      // 拦截杀进程操作
 		}
 		for _, pattern := range dangerousPatterns {
 			if matched, _ := regexp.MatchString(pattern, args); matched {
